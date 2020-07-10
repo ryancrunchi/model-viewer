@@ -46,5 +46,8 @@
     "husky": "^4.2.1",
     "lerna": "^3.20.2",
     "typescript": "^3.8.2"
+  },
+  "dependencies": {
+    "rollup": "^2.21.0"
   }
 }

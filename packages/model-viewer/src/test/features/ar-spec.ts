@@ -14,7 +14,7 @@
  */
 
 import {IS_IOS} from '../../constants.js';
-import {ARInterface, ARMixin, openIOSARQuickLook, openSceneViewer} from '../../features/ar.js';
+import {ARInterface, IOSIntent, ARMixin, openIOSARQuickLook, openSceneViewer, IOSIntentParameters, AndroidIntent, AndroidIntentParameters} from '../../features/ar.js';
 import ModelViewerElementBase from '../../model-viewer-base.js';
 import {Constructor} from '../../utilities.js';
 import {assetPath, spy, timePasses, waitForEvent} from '../helpers.js';
@@ -50,10 +50,9 @@ suite('ModelViewerElementBase with ARMixin', () => {
           }
         });
 
-        openSceneViewer(
-            'https://example.com/model.gltf?token=foo',
-            'Example model',
-            'auto');
+        let parameters = new AndroidIntentParameters("Title", "https://example.com/");
+        let intent = new AndroidIntent(new URL('https://example.com/model.gltf?token=foo'), parameters);
+        openSceneViewer(intent);
 
         expect(intentUrls.length).to.be.equal(1);
 
@@ -74,7 +73,8 @@ suite('ModelViewerElementBase with ARMixin', () => {
           }
         });
 
-        openIOSARQuickLook('https://example.com/model.gltf', 'fixed');
+        let parameters = new IOSIntentParameters("title", "subtitle", "price");
+        openIOSARQuickLook(new IOSIntent(new URL('https://example.com/model.gltf'), parameters));
 
         expect(intentUrls.length).to.be.equal(1);
 
