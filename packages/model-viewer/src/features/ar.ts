@@ -30,7 +30,6 @@ export interface ARIntentParameters {
 }
 
 export interface ARIntent {
-  anchorElement?: HTMLAnchorElement;
   parameters: ARIntentParameters;
   file: URL;
   toURL: () => string;
@@ -123,7 +122,6 @@ export class AndroidIntentParameters implements ARIntentParameters {
 }
 
 export class IOSIntent implements ARIntent {
-  anchorElement?: HTMLAnchorElement;
   constructor(public file: URL, public parameters: IOSIntentParameters) {};
 
   toURL = () => {
@@ -134,7 +132,6 @@ export class IOSIntent implements ARIntent {
 }
 
 export class AndroidIntent implements ARIntent {
-  anchorElement?: HTMLAnchorElement;
   constructor(public file: URL, public parameters: AndroidIntentParameters) {};
 
   toURL = () => {
@@ -295,7 +292,7 @@ export const ARMixin = <T extends Constructor<ModelViewerElementBase>>(
 
     private[$onARTap] = (event: Event) => {
       if ((event as any).data == '_apple_ar_quicklook_button_tapped') {
-        this.dispatchEvent(new CustomEvent('quick-look-button-tapped'));
+        this.dispatchEvent(new CustomEvent('quick-look-button-tapped', {detail: {originalEvent: event}}));
       }
     };
 
@@ -523,8 +520,6 @@ configuration or device capabilities');
       anchor.appendChild(img);
       anchor.setAttribute('href', iosIntent.toURL());
       anchor.click();
-      anchor.removeChild(img);
-      iosIntent.anchorElement = anchor;
     }
   }
 
