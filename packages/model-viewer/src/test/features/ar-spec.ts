@@ -14,7 +14,7 @@
  */
 
 import {IS_IOS} from '../../constants.js';
-import {$openIOSARQuickLook, $openSceneViewer, ARInterface, ARMixin} from '../../features/ar.js';
+import {$openIOSARQuickLook, $openSceneViewer, AndroidIntent, AndroidIntentParameters, ARInterface, ARMixin, IOSIntent, IOSIntentParameters} from '../../features/ar.js';
 import ModelViewerElementBase from '../../model-viewer-base.js';
 import {Constructor, timePasses, waitForEvent} from '../../utilities.js';
 import {assetPath, spy} from '../helpers.js';
@@ -66,9 +66,11 @@ suite('ModelViewerElementBase with ARMixin', () => {
 
       suite('openSceneViewer', () => {
         test('preserves query parameters in model URLs', () => {
-          element.src = 'https://example.com/model.gltf?token=foo';
-          element.alt = 'Example model';
-          (element as any)[$openSceneViewer]();
+          let parameters = new AndroidIntentParameters("Title", "https://example.com/");
+          let intent = new AndroidIntent(new URL('https://example.com/model.gltf?token=foo'), parameters);
+          console.warn(intent.toURL());
+
+          (element as any)[$openSceneViewer](intent);
 
           expect(intentUrls.length).to.be.equal(1);
 
@@ -78,10 +80,10 @@ suite('ModelViewerElementBase with ARMixin', () => {
         });
 
         test('keeps title and link when supplied', () => {
-          element.src =
-              'https://example.com/model.gltf?link=http://linkme.com&title=bar';
-          element.alt = 'alt';
-          (element as any)[$openSceneViewer]();
+          let parameters = new AndroidIntentParameters("bar", undefined, undefined, new URL("http://linkme.com"));
+          let intent = new AndroidIntent(new URL('https://example.com/model.gltf'), parameters);
+
+          (element as any)[$openSceneViewer](intent);
 
           expect(intentUrls.length).to.be.equal(1);
 
@@ -92,10 +94,9 @@ suite('ModelViewerElementBase with ARMixin', () => {
         });
 
         test('sets sound and link to absolute URLs', () => {
-          element.src =
-              'https://example.com/model.gltf?link=foo.html&sound=bar.ogg';
-          element.alt = 'alt';
-          (element as any)[$openSceneViewer]();
+          let parameters = new AndroidIntentParameters("bar", undefined, undefined, new URL("foo.html"), "bar.ogg");
+          let intent = new AndroidIntent(new URL('https://example.com/model.gltf'), parameters);
+          (element as any)[$openSceneViewer](intent);
 
           expect(intentUrls.length).to.be.equal(1);
 
@@ -111,33 +112,30 @@ suite('ModelViewerElementBase with ARMixin', () => {
 
       suite('openQuickLook', () => {
         test('sets hash for fixed scale', () => {
-          element.src = 'https://example.com/model.gltf';
-          element.iosSrc = 'https://example.com/model.usdz';
-          element.arScale = 'fixed';
-          (element as any)[$openIOSARQuickLook]();
+          let parameters = new IOSIntentParameters("title", "subtitle", "price", false);
+          let intent = new IOSIntent(new URL('https://example.com/model.usdz'), parameters);
+          (element as any)[$openIOSARQuickLook](intent);
 
           expect(intentUrls.length).to.be.equal(1);
 
           const url = new URL(intentUrls[0]);
 
           expect(url.pathname).equal('/model.usdz');
-          expect(url.hash).to.equal('#allowsContentScaling=0');
+          expect(url.hash).to.contains('allowsContentScaling=0');
         });
 
         test('keeps original hash too', () => {
-          element.src = 'https://example.com/model.gltf';
-          element.iosSrc =
-              'https://example.com/model.usdz#custom=path-to-banner.html';
-          element.arScale = 'fixed';
-          (element as any)[$openIOSARQuickLook]();
+          let parameters = new IOSIntentParameters("title", "subtitle", "price", false, undefined, undefined, undefined, "path-to-banner.html");
+          let intent = new IOSIntent(new URL('https://example.com/model.usdz'), parameters);
+          (element as any)[$openIOSARQuickLook](intent);
 
           expect(intentUrls.length).to.be.equal(1);
 
           const url = new URL(intentUrls[0]);
 
           expect(url.pathname).equal('/model.usdz');
-          expect(url.hash).to.equal(
-              '#custom=path-to-banner.html&allowsContentScaling=0');
+          expect(url.hash).to.contains('custom=path-to-banner.html');
+          expect(url.hash).to.contains('allowsContentScaling=0');
         });
       });
     });

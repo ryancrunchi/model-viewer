@@ -22,6 +22,155 @@ import {enumerationDeserializer} from '../styles/deserializers.js';
 import {ARStatus} from '../three-components/ARRenderer.js';
 import {Constructor, waitForEvent} from '../utilities.js';
 
+export interface ARIntentParameters {
+  title: string;
+  resizable?: boolean;
+  link?: URL;
+  toURL: () => string;
+}
+
+export interface ARIntent {
+  anchorElement?: HTMLAnchorElement;
+  parameters: ARIntentParameters;
+  file: URL;
+  toURL: () => string;
+}
+
+export class ARIntentEventDetails {
+  constructor(public intent: ARIntent, public originalEvent: Event) {};
+}
+
+export enum ApplePayButtonType {
+  PLAIN = "plain",
+  PAY = "pay",
+  BUY = "buy",
+  CHECK_OUT = "check-out",
+  BOOK = "book",
+  DONATE = "donate",
+  SUBSCRIBE = "subscribe"
+}
+
+export enum AppleCustomBannerHeight {
+  SMALL = "small",
+  MEDIUM = "medium",
+  LARGE = "large"
+}
+
+export class IOSIntentParameters implements ARIntentParameters {
+  constructor(public title: string,
+    public checkoutSubtitle: string,
+    public price: string,
+    public resizable?: boolean,
+    public link?: URL,
+    public applePayButtonType?: ApplePayButtonType,
+    public callToAction?: string,
+    public custom?: string,
+    public customHeight?: AppleCustomBannerHeight) {};
+
+  toURL = () => {
+    if (!this.applePayButtonType && !this.callToAction) {
+      console.warn("Missing either `applePayButtonType` or `callToAction` for the button to appear");
+    }
+    let mapKeys: any = {
+      title: "checkoutTitle",
+      resizable: "allowsContentScaling",
+      link: "canonicalWebPageURL"
+    };
+    return Object.entries(this)
+      .filter(([, value]) => value !== undefined && typeof(value) !== "function" && value.toString() && value.toString().length > 0)
+      .map(([key, value]) => (mapKeys[key] || key.toString()) + "=" + encodeURIComponent(value.toString()))
+      .join("&");
+  }
+}
+
+export enum AndroidARIntentMode {
+  "3D_PREFERRED" = "3d_preferred",
+  "3D_ONLY" = "3d_only",
+  AR_PREFERRED = "ar_preferred",
+  AR_ONLY = "ar_only"
+}
+
+export class AndroidIntentParameters implements ARIntentParameters {
+  constructor(public title: string,
+    public fallbackURL?: string,
+    public resizable?: boolean,
+    public link?: URL,
+    public sound?: string) {};
+
+  toURL = () => {
+    /*return Object.entries(this)
+      .filter(([, value]) => value !== undefined && typeof(value) !== "function" && value.toString() && value.toString().length > 0)
+      .map(([key, value]) => key.toString() + "=" + encodeURIComponent(value.toString()))
+      .join("&");
+
+*/
+    if (this.link && (!this.link?.toString().includes("http://") || !this.link?.toString().includes("https://"))) {
+      this.link = new URL(this.link.toString(), self.location.toString());
+    }
+    if (this.sound && (!this.sound?.includes("http://") || !this.sound?.includes("https://"))) {
+      this.sound = new URL(this.sound, self.location.toString()).toString();
+    }
+    let mapKeys: any = {
+      title: "checkoutTitle",
+      resizable: "allowsContentScaling",
+      link: "canonicalWebPageURL"
+    };
+    return Object.entries(this)
+      .filter(([, value]) => value !== undefined && typeof(value) !== "function" && value.toString() && value.toString().length > 0)
+      .map(([key, value]) => (mapKeys[key] || key.toString()) + "=" + encodeURIComponent(value.toString()))
+      .join("&");
+  }
+}
+
+export class IOSIntent implements ARIntent {
+  anchorElement?: HTMLAnchorElement;
+  constructor(public file: URL, public parameters: IOSIntentParameters) {};
+
+  toURL = () => {
+    const url = this.file;
+    url.hash = this.parameters.toURL();
+    return url.toString();
+  };
+}
+
+export class AndroidIntent implements ARIntent {
+  anchorElement?: HTMLAnchorElement;
+  constructor(public file: URL, public parameters: AndroidIntentParameters) {};
+
+  toURL = () => {
+    let intent = "intent://arvr.google.com/scene-viewer/1.0"
+    let params = {
+      file: this.file.toString(),
+      mode: AndroidARIntentMode.AR_ONLY,
+      link: this.parameters.link,
+      title: encodeURIComponent(this.parameters.title),
+      resizable: this.parameters.resizable
+    };
+    let fileParams = this.file.searchParams.toString();
+    let paramString = [fileParams, ...Object.entries(params)
+      .filter(([, value]) => value !== undefined && typeof(value) !== "function" && value.toString() && value.toString().length > 0)
+      .map(([key, value]) => key.toString() + "=" + value)]
+      .join("&");
+
+    const scheme = this.file.protocol.replace(":", "");
+    let hashParams = {
+      scheme: scheme,
+      package: "com.google.ar.core",
+      action: "android.intent.action.VIEW",
+      "S.browser_fallback_url": this.parameters.fallbackURL ? encodeURIComponent(this.parameters.fallbackURL) : undefined
+    };
+    let hashString = "Intent;";
+    hashString += Object.entries(hashParams)
+      .filter(([, value]) => value !== undefined && typeof(value) !== "function" && value.toString() && value.toString().length > 0)
+      .map(([key, value]) => key.toString() + "=" + value)
+      .join(";");
+    hashString += ";end;";
+
+    return `${intent}?${paramString}#${hashString}`;
+  }
+}
+  
+
 let isWebXRBlocked = false;
 let isSceneViewerBlocked = false;
 const noArViewerSigil = '#model-viewer-no-ar-fallback';
@@ -82,6 +231,36 @@ export const ARMixin = <T extends Constructor<ModelViewerElementBase>>(
     arModes: string = DEFAULT_AR_MODES;
 
     @property({type: String, attribute: 'ios-src'}) iosSrc: string|null = null;
+
+    @property({type: String, attribute: 'ar-custom-button-title'})
+    arCustomButtonTitle: string = '';
+
+    @property({type: String, attribute: 'ar-custom-button-link'})
+    arCustomButtonLink?: URL;
+    
+    @property({type: String, attribute: 'ar-custom-button-ios-subtitle'})
+    arCustomButtonIOSSubtitle: string = '';
+    
+    @property({type: String, attribute: 'ar-custom-button-ios-price'})
+    arCustomButtonIOSPrice: string = '';
+
+    @property({type: ApplePayButtonType, attribute: 'ar-custom-button-ios-apple-pay-type'})
+    arCustomButtonIOSApplePayType = ApplePayButtonType.PAY;
+
+    @property({type: String, attribute: 'ar-custom-button-ios-action'})
+    arCustomButtonIOSAction?: string;
+
+    @property({type: String, attribute: 'ar-custom-button-ios-custom'})
+    arCustomButtonIOSCustom?: string;
+    
+    @property({type: AppleCustomBannerHeight, attribute: 'ar-custom-button-ios-custom-height'})
+    arCustomButtonIOSCustomHeight?: AppleCustomBannerHeight;
+    
+    @property({type: String, attribute: 'ar-custom-button-android-fallback-url'})
+    arCustomButtonAndroidFallbackURL?: string;
+    
+    @property({type: String, attribute: 'ar-custom-button-android-sound'})
+    arCustomButtonAndroidSound?: string;
 
     get canActivateAR(): boolean {
       return this[$arMode] !== ARMode.NONE;
@@ -171,13 +350,28 @@ export const ARMixin = <T extends Constructor<ModelViewerElementBase>>(
     async activateAR() {
       switch (this[$arMode]) {
         case ARMode.QUICK_LOOK:
-          this[$openIOSARQuickLook]();
+          let iOSParameters = new IOSIntentParameters(this.arCustomButtonTitle,
+            this.arCustomButtonIOSSubtitle,
+            this.arCustomButtonIOSPrice,
+            this.arScale === 'auto',
+            this.arCustomButtonLink,
+            this.arCustomButtonIOSApplePayType,
+            this.arCustomButtonIOSAction,
+            this.arCustomButtonIOSCustom, this.arCustomButtonIOSCustomHeight);
+          let intent = new IOSIntent(new URL(this.iosSrc!), iOSParameters);
+          this[$openIOSARQuickLook](intent);
           break;
         case ARMode.WEBXR:
           await this[$enterARWithWebXR]();
           break;
         case ARMode.SCENE_VIEWER:
-          this[$openSceneViewer]();
+          let androidParameters = new AndroidIntentParameters(this.arCustomButtonTitle,
+            this.arCustomButtonAndroidFallbackURL,
+            this.arScale === 'auto',
+            this.arCustomButtonLink,
+            this.arCustomButtonAndroidSound);
+          let androidIntent = new AndroidIntent(new URL(this.src!), androidParameters);
+          this[$openSceneViewer](androidIntent);
           break;
         default:
           console.warn(
@@ -267,15 +461,14 @@ configuration or device capabilities');
      * Takes a URL and a title string, and attempts to launch Scene Viewer on
      * the current device.
      */
-    [$openSceneViewer]() {
+    [$openSceneViewer](androidIntent: AndroidIntent) {
       const location = self.location.toString();
       const locationUrl = new URL(location);
-      const modelUrl = new URL(this.src!, location);
-      const params = new URLSearchParams(modelUrl.search);
 
       locationUrl.hash = noArViewerSigil;
 
       // modelUrl can contain title/link/sound etc.
+      /*
       params.set('mode', 'ar_only');
       if (!params.has('disable_occlusion')) {
         params.set('disable_occlusion', 'true');
@@ -294,11 +487,7 @@ configuration or device capabilities');
         const linkUrl = new URL(params.get('link')!, location);
         params.set('link', linkUrl.toString());
       }
-
-      const intent = `intent://arvr.google.com/scene-viewer/1.0?${
-          params
-              .toString()+'&file='+encodeURIComponent(modelUrl.toString())}#Intent;scheme=https;package=com.google.ar.core;action=android.intent.action.VIEW;S.browser_fallback_url=${
-          encodeURIComponent(locationUrl.toString())};end;`;
+      */
 
       const undoHashChange = () => {
         if (self.location.hash === noArViewerSigil) {
@@ -317,7 +506,9 @@ configuration or device capabilities');
 
       self.addEventListener('hashchange', undoHashChange, {once: true});
 
-      this[$arAnchor].setAttribute('href', intent);
+      const nativeIntent = androidIntent.toURL();
+
+      this[$arAnchor].setAttribute('href', nativeIntent);
       this[$arAnchor].click();
     }
 
@@ -325,21 +516,15 @@ configuration or device capabilities');
      * Takes a URL to a USDZ file and sets the appropriate fields so that Safari
      * iOS can intent to their AR Quick Look.
      */
-    [$openIOSARQuickLook]() {
-      const modelUrl = new URL(this.iosSrc!, self.location.toString());
-      if (this.arScale === 'fixed') {
-        if (modelUrl.hash) {
-          modelUrl.hash += '&';
-        }
-        modelUrl.hash += 'allowsContentScaling=0';
-      }
+    [$openIOSARQuickLook](iosIntent: IOSIntent) {
       const anchor = this[$arAnchor];
       anchor.setAttribute('rel', 'ar');
       const img = document.createElement('img');
       anchor.appendChild(img);
-      anchor.setAttribute('href', modelUrl.toString());
+      anchor.setAttribute('href', iosIntent.toURL());
       anchor.click();
       anchor.removeChild(img);
+      iosIntent.anchorElement = anchor;
     }
   }
 
