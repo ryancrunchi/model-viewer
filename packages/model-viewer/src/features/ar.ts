@@ -15,11 +15,12 @@
 
 import {property} from 'lit-element';
 import {Event as ThreeEvent} from 'three';
+import {USDZExporter} from 'three/examples/jsm/exporters/USDZExporter';
 
 import {IS_AR_QUICKLOOK_CANDIDATE, IS_SCENEVIEWER_CANDIDATE, IS_WEBXR_AR_CANDIDATE} from '../constants.js';
-import ModelViewerElementBase, {$loaded, $needsRender, $renderer, $scene, $shouldAttemptPreload, $updateSource} from '../model-viewer-base.js';
+import ModelViewerElementBase, {$needsRender, $progressTracker, $renderer, $scene, $shouldAttemptPreload, $updateSource} from '../model-viewer-base.js';
 import {enumerationDeserializer} from '../styles/deserializers.js';
-import {ARStatus} from '../three-components/ARRenderer.js';
+import {ARStatus, ARTracking} from '../three-components/ARRenderer.js';
 import {Constructor, waitForEvent} from '../utilities.js';
 
 export interface ARIntentParameters {
@@ -82,6 +83,16 @@ export class IOSIntentParameters implements ARIntentParameters {
   }
 }
 
+export class IOSIntent implements ARIntent {
+  constructor(public file: URL, public parameters: IOSIntentParameters) {};
+
+  toURL = () => {
+    const url = this.file;
+    url.hash = this.parameters.toURL();
+    return url.toString();
+  };
+}
+
 export enum AndroidARIntentMode {
   "3D_PREFERRED" = "3d_preferred",
   "3D_ONLY" = "3d_only",
@@ -94,7 +105,9 @@ export class AndroidIntentParameters implements ARIntentParameters {
     public fallbackURL?: string,
     public resizable?: boolean,
     public link?: URL,
-    public sound?: string) {};
+    public sound?: string,
+    public disableOcclusion?: boolean,
+    public enableVerticalPlacement?: boolean) {};
 
   toURL = () => {
     /*return Object.entries(this)
@@ -121,16 +134,6 @@ export class AndroidIntentParameters implements ARIntentParameters {
   }
 }
 
-export class IOSIntent implements ARIntent {
-  constructor(public file: URL, public parameters: IOSIntentParameters) {};
-
-  toURL = () => {
-    const url = this.file;
-    url.hash = this.parameters.toURL();
-    return url.toString();
-  };
-}
-
 export class AndroidIntent implements ARIntent {
   constructor(public file: URL, public parameters: AndroidIntentParameters) {};
 
@@ -138,10 +141,13 @@ export class AndroidIntent implements ARIntent {
     let intent = "intent://arvr.google.com/scene-viewer/1.0"
     let params = {
       file: this.file.toString(),
-      mode: AndroidARIntentMode.AR_ONLY,
+      mode: AndroidARIntentMode.AR_PREFERRED,
       link: this.parameters.link,
+      sound: this.parameters.sound,
       title: encodeURIComponent(this.parameters.title),
-      resizable: this.parameters.resizable
+      resizable: this.parameters.resizable,
+      "disable_occlusion": this.parameters.disableOcclusion,
+      "enable_vertical_placement": this.parameters.enableVerticalPlacement
     };
     let fileParams = this.file.searchParams.toString();
     let paramString = [fileParams, ...Object.entries(params)
@@ -177,7 +183,7 @@ export type ARMode = 'quick-look'|'scene-viewer'|'webxr'|'none';
 const deserializeARModes = enumerationDeserializer<ARMode>(
     ['quick-look', 'scene-viewer', 'webxr', 'none']);
 
-const DEFAULT_AR_MODES = 'webxr scene-viewer quick-look';
+const DEFAULT_AR_MODES = 'webxr scene-viewer';
 
 const ARMode: {[index: string]: ARMode} = {
   QUICK_LOOK: 'quick-look',
@@ -188,6 +194,10 @@ const ARMode: {[index: string]: ARMode} = {
 
 export interface ARStatusDetails {
   status: ARStatus;
+}
+
+export interface ARTrackingDetails {
+  status: ARTracking;
 }
 
 const $arButtonContainer = Symbol('arButtonContainer');
@@ -202,6 +212,7 @@ const $preload = Symbol('preload');
 
 const $onARButtonContainerClick = Symbol('onARButtonContainerClick');
 const $onARStatus = Symbol('onARStatus');
+const $onARTracking = Symbol('onARTracking');
 const $onARTap = Symbol('onARTap');
 const $selectARMode = Symbol('selectARMode');
 
@@ -226,6 +237,9 @@ export const ARMixin = <T extends Constructor<ModelViewerElementBase>>(
 
     @property({type: String, attribute: 'ar-modes'})
     arModes: string = DEFAULT_AR_MODES;
+
+    @property({type: Boolean, attribute: 'ar-android-disable-occlusion'})
+    disableOcclusion: boolean = false;
 
     @property({type: String, attribute: 'ios-src'}) iosSrc: string|null = null;
 
@@ -253,11 +267,11 @@ export const ARMixin = <T extends Constructor<ModelViewerElementBase>>(
     @property({type: AppleCustomBannerHeight, attribute: 'ar-custom-button-ios-custom-height'})
     arCustomButtonIOSCustomHeight?: AppleCustomBannerHeight;
     
-    @property({type: String, attribute: 'ar-custom-button-android-fallback-url'})
-    arCustomButtonAndroidFallbackURL?: string;
+    @property({type: String, attribute: 'ar-android-fallback-url'})
+    arAndroidFallbackURL?: string;
     
-    @property({type: String, attribute: 'ar-custom-button-android-sound'})
-    arCustomButtonAndroidSound?: string;
+    @property({type: String, attribute: 'ar-android-sound'})
+    arAndroidSound?: string;
 
     get canActivateAR(): boolean {
       return this[$arMode] !== ARMode.NONE;
@@ -287,7 +301,18 @@ export const ARMixin = <T extends Constructor<ModelViewerElementBase>>(
         this.setAttribute('ar-status', status);
         this.dispatchEvent(
             new CustomEvent<ARStatusDetails>('ar-status', {detail: {status}}));
+        if (status === ARStatus.NOT_PRESENTING) {
+          this.removeAttribute('ar-tracking');
+        } else if (status === ARStatus.SESSION_STARTED) {
+          this.setAttribute('ar-tracking', ARTracking.TRACKING);
+        }
       }
+    };
+
+    private[$onARTracking] = ({status}: ThreeEvent) => {
+      this.setAttribute('ar-tracking', status);
+      this.dispatchEvent(new CustomEvent<ARTrackingDetails>(
+          'ar-tracking', {detail: {status}}));
     };
 
     private[$onARTap] = (event: Event) => {
@@ -302,6 +327,9 @@ export const ARMixin = <T extends Constructor<ModelViewerElementBase>>(
       this[$renderer].arRenderer.addEventListener('status', this[$onARStatus]);
       this.setAttribute('ar-status', ARStatus.NOT_PRESENTING);
 
+      this[$renderer].arRenderer.addEventListener(
+          'tracking', this[$onARTracking]);
+
       this[$arAnchor].addEventListener('message', this[$onARTap]);
     }
 
@@ -310,6 +338,8 @@ export const ARMixin = <T extends Constructor<ModelViewerElementBase>>(
 
       this[$renderer].arRenderer.removeEventListener(
           'status', this[$onARStatus]);
+      this[$renderer].arRenderer.removeEventListener(
+          'tracking', this[$onARTracking]);
 
       this[$arAnchor].removeEventListener('message', this[$onARTap]);
     }
@@ -347,26 +377,19 @@ export const ARMixin = <T extends Constructor<ModelViewerElementBase>>(
     async activateAR() {
       switch (this[$arMode]) {
         case ARMode.QUICK_LOOK:
-          let iOSParameters = new IOSIntentParameters(this.arCustomButtonTitle,
-            this.arCustomButtonIOSSubtitle,
-            this.arCustomButtonIOSPrice,
-            this.arScale === 'auto',
-            this.arCustomButtonLink,
-            this.arCustomButtonIOSApplePayType,
-            this.arCustomButtonIOSAction,
-            this.arCustomButtonIOSCustom, this.arCustomButtonIOSCustomHeight);
-          let intent = new IOSIntent(new URL(this.iosSrc!), iOSParameters);
-          this[$openIOSARQuickLook](intent);
+          this[$openIOSARQuickLook]();
           break;
         case ARMode.WEBXR:
           await this[$enterARWithWebXR]();
           break;
         case ARMode.SCENE_VIEWER:
           let androidParameters = new AndroidIntentParameters(this.arCustomButtonTitle,
-            this.arCustomButtonAndroidFallbackURL,
+            this.arAndroidFallbackURL,
             this.arScale === 'auto',
             this.arCustomButtonLink,
-            this.arCustomButtonAndroidSound);
+            this.arAndroidSound,
+            this.disableOcclusion,
+            this.arPlacement === 'wall');
           let androidIntent = new AndroidIntent(new URL(this.src!), androidParameters);
           this[$openSceneViewer](androidIntent);
           break;
@@ -396,12 +419,16 @@ configuration or device capabilities');
               !isSceneViewerBlocked) {
             this[$arMode] = ARMode.SCENE_VIEWER;
             break;
-          } else if (
-              value === 'quick-look' && !!this.iosSrc &&
-              IS_AR_QUICKLOOK_CANDIDATE) {
+          } else if (value === 'quick-look' && IS_AR_QUICKLOOK_CANDIDATE) {
             this[$arMode] = ARMode.QUICK_LOOK;
             break;
           }
+        }
+
+        // The presence of ios-src overrides the absence of quick-look ar-mode.
+        if (!this.canActivateAR && this.iosSrc != null &&
+            IS_AR_QUICKLOOK_CANDIDATE) {
+          this[$arMode] = ARMode.QUICK_LOOK;
         }
       }
 
@@ -423,9 +450,9 @@ configuration or device capabilities');
     }
 
     protected async[$enterARWithWebXR]() {
-      console.log('Attempting to present in AR...');
+      console.log('Attempting to present in AR with WebXR...');
 
-      if (!this[$loaded]) {
+      if (!this.loaded) {
         this[$preload] = true;
         this[$updateSource]();
         await waitForEvent(this, 'load');
@@ -439,10 +466,11 @@ configuration or device capabilities');
         arRenderer.placeOnWall = this.arPlacement === 'wall';
         await arRenderer.present(this[$scene]);
       } catch (error) {
-        console.warn('Error while trying to present to AR');
+        console.warn('Error while trying to present in AR with WebXR');
         console.error(error);
         await this[$renderer].arRenderer.stopPresenting();
         isWebXRBlocked = true;
+        console.warn('Falling back to next ar-mode');
         await this[$selectARMode]();
         this.activateAR();
       } finally {
@@ -461,12 +489,14 @@ configuration or device capabilities');
     [$openSceneViewer](androidIntent: AndroidIntent) {
       const location = self.location.toString();
       const locationUrl = new URL(location);
+      //const modelUrl = new URL(this.src!, location);
+      //const params = new URLSearchParams(modelUrl.search);
 
       locationUrl.hash = noArViewerSigil;
 
       // modelUrl can contain title/link/sound etc.
       /*
-      params.set('mode', 'ar_only');
+      params.set('mode', 'ar_preferred');
       if (!params.has('disable_occlusion')) {
         params.set('disable_occlusion', 'true');
       }
@@ -484,6 +514,13 @@ configuration or device capabilities');
         const linkUrl = new URL(params.get('link')!, location);
         params.set('link', linkUrl.toString());
       }
+
+      const intent = `intent://arvr.google.com/scene-viewer/1.0?${
+          params.toString() + '&file=' +
+          encodeURIComponent(
+              modelUrl
+                  .toString())}#Intent;scheme=https;package=com.google.ar.core;action=android.intent.action.VIEW;S.browser_fallback_url=${
+          encodeURIComponent(locationUrl.toString())};end;`;
       */
 
       const undoHashChange = () => {
@@ -495,6 +532,8 @@ configuration or device capabilities');
           // because hash-only changes modify the URL in-place without
           // navigating:
           self.history.back();
+          console.warn('Error while trying to present in AR with Scene Viewer');
+          console.warn('Falling back to next ar-mode');
           this[$selectARMode]();
           // Would be nice to activateAR() here, but webXR fails due to not
           // seeing a user activation.
@@ -503,6 +542,8 @@ configuration or device capabilities');
 
       self.addEventListener('hashchange', undoHashChange, {once: true});
 
+      //this[$arAnchor].setAttribute('href', intent);
+      console.log('Attempting to present in AR with Scene Viewer...');
       const nativeIntent = androidIntent.toURL();
 
       this[$arAnchor].setAttribute('href', nativeIntent);
@@ -513,13 +554,78 @@ configuration or device capabilities');
      * Takes a URL to a USDZ file and sets the appropriate fields so that Safari
      * iOS can intent to their AR Quick Look.
      */
-    [$openIOSARQuickLook](iosIntent: IOSIntent) {
+    async[$openIOSARQuickLook]() {
+      let iOSParameters = new IOSIntentParameters(this.arCustomButtonTitle,
+        this.arCustomButtonIOSSubtitle,
+        this.arCustomButtonIOSPrice,
+        this.arScale === 'auto',
+        this.arCustomButtonLink,
+        this.arCustomButtonIOSApplePayType,
+        this.arCustomButtonIOSAction,
+        this.arCustomButtonIOSCustom, this.arCustomButtonIOSCustomHeight);
+      let intent = new IOSIntent(new URL(this.iosSrc!), iOSParameters);
+      const generateUsdz = !this.iosSrc;
+
+      this[$arButtonContainer].classList.remove('enabled');
+
+      const objectURL = generateUsdz ? await this.prepareUSDZ() : intent.toURL();
+      const modelUrl = new URL(objectURL, self.location.toString());
+/*
+      if (this.arScale === 'fixed') {
+        if (modelUrl.hash) {
+          modelUrl.hash += '&';
+        }
+        modelUrl.hash += 'allowsContentScaling=0';
+      }
+*/
       const anchor = this[$arAnchor];
       anchor.setAttribute('rel', 'ar');
       const img = document.createElement('img');
       anchor.appendChild(img);
-      anchor.setAttribute('href', iosIntent.toURL());
+      anchor.setAttribute('href', modelUrl.toString());
+      if (generateUsdz) {
+        anchor.setAttribute('download', 'model.usdz');
+      }
+      console.log('Attempting to present in AR with Quick Look...');
       anchor.click();
+      anchor.removeChild(img);
+      if (generateUsdz) {
+        URL.revokeObjectURL(objectURL);
+      }
+      this[$arButtonContainer].classList.add('enabled');
+    }
+
+    async prepareUSDZ(): Promise<string> {
+      const updateSourceProgress = this[$progressTracker].beginActivity();
+
+      const scene = this[$scene];
+
+      const shadow = scene.shadow;
+      let visible = false;
+
+      // Remove shadow from export
+      if (shadow != null) {
+        visible = shadow.visible;
+        shadow.visible = false;
+      }
+
+      updateSourceProgress(0.2);
+
+      const exporter = new USDZExporter();
+      const arraybuffer = await exporter.parse(scene.modelContainer);
+      const blob = new Blob([arraybuffer], {
+        type: 'model/vnd.usdz+zip',
+      });
+
+      const url = URL.createObjectURL(blob);
+
+      updateSourceProgress(1);
+
+      if (shadow != null) {
+        shadow.visible = visible;
+      }
+
+      return url;
     }
   }
 
